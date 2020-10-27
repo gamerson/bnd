@@ -1,11 +1,18 @@
 package bndtools.launch;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.IResource;
+import org.eclipse.core.resources.IResourceProxyVisitor;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.debug.core.ILaunchConfiguration;
@@ -15,6 +22,7 @@ import org.eclipse.jdt.core.Flags;
 import org.eclipse.jdt.core.IAnnotation;
 import org.eclipse.jdt.core.ICompilationUnit;
 import org.eclipse.jdt.core.IJavaElement;
+import org.eclipse.jdt.core.ILocalVariable;
 import org.eclipse.jdt.core.IMethod;
 import org.eclipse.jdt.core.IParent;
 import org.eclipse.jdt.core.IType;
@@ -23,8 +31,14 @@ import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.jdt.internal.ui.javaeditor.JavaEditor;
 import org.eclipse.jdt.ui.JavaUI;
 import org.eclipse.jface.text.ITextSelection;
+import org.eclipse.jface.window.Window;
+import org.eclipse.swt.widgets.Composite;
+import org.eclipse.swt.widgets.Control;
+import org.eclipse.swt.widgets.Display;
+import org.eclipse.swt.widgets.Label;
 import org.eclipse.ui.IEditorInput;
 import org.eclipse.ui.IEditorPart;
+import org.eclipse.ui.dialogs.ResourceListSelectionDialog;
 
 import aQute.lib.strings.Strings;
 import bndtools.launch.api.AbstractLaunchShortcut;
@@ -82,9 +96,69 @@ public class JUnitShortcut extends AbstractLaunchShortcut {
 		ILaunchConfigurationWorkingCopy wc = findLaunchConfigWC(null, targetProject);
 
 		if (wc == null) {
-			IPath projectPath = targetProject.getFullPath()
+			IPath targetPath = targetProject.getFullPath()
 				.makeRelative();
-			wc = createConfiguration(projectPath, targetProject);
+
+			List<IResource> possibleTargets = new ArrayList<>();
+
+			Predicate<String> nameMatches = name -> name.endsWith(LaunchConstants.EXT_BND)
+				|| name.endsWith(LaunchConstants.EXT_BNDRUN);
+
+			IResourceProxyVisitor visitor = proxy -> {
+				String name = proxy.getName();
+				if (nameMatches.test(name)) {
+					possibleTargets.add(proxy.requestResource());
+					return false;
+				}
+				return true;
+			};
+
+			targetProject.accept(visitor, 1, 0);
+
+			if (possibleTargets.size() > 0) {
+				ResourceListSelectionDialog dialog = new ResourceListSelectionDialog(Display.getCurrent()
+					.getActiveShell(), possibleTargets.toArray(new IResource[0])) {
+					@Override
+					protected String adjustPattern() {
+						String pattern = super.adjustPattern();
+						if ("".equals(pattern)) {
+							return "*";
+						}
+						return pattern;
+					}
+
+					@Override
+					public void create() {
+						super.create();
+						refresh(true);
+					}
+
+					@Override
+					protected Control createDialogArea(Composite parent) {
+						Composite area = (Composite) super.createDialogArea(parent);
+						Stream.of(area.getChildren())
+							.filter(Label.class::isInstance)
+							.map(Label.class::cast)
+							.findFirst()
+							.ifPresent(label -> label.setText(
+								"Select a targetPath resource for test launch."));
+						return area;
+					}
+				};
+
+				dialog.setTitle("JUnit Shortcut");
+
+				if (dialog.open() == Window.OK) {
+					Object[] result = dialog.getResult();
+
+					if (result != null && result.length > 0 && result[0] instanceof IFile) {
+						IFile file = (IFile) result[0];
+						targetPath = file.getFullPath();
+					}
+				}
+			}
+
+			wc = createConfiguration(targetPath, targetProject);
 		}
 
 		if (wc != null) {
@@ -153,7 +227,8 @@ public class JUnitShortcut extends AbstractLaunchShortcut {
 			case IJavaElement.TYPE : {
 				IType type = (IType) element;
 				if (isTestable(type)) {
-					testNames.add((type).getFullyQualifiedName());
+					testNames.add(type.getFullyQualifiedName());
+					config.setAttribute("org.eclipse.jdt.launching.MAIN_TYPE", type.getFullyQualifiedName());
 				}
 			}
 				break;
